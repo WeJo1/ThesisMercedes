@@ -1,0 +1,30 @@
+run_name: baseline
+seed: 42
+deterministic: true
+device: auto
+
+model:
+  backbone: resnet18
+  pretrained: false
+  hidden_dim: 256
+  dropout: 0.1
+
+data:
+  train_csv: data/train_pairs.csv
+  val_csv: data/val_pairs.csv
+  test_csv: data/test_pairs.csv
+  image_size: 224
+  num_workers: 2
+
+train:
+  epochs: 5
+  batch_size: 16
+  lr: 0.0003
+  weight_decay: 0.0001
+  log_every: 10
+
+eval:
+  batch_size: 32
+
+checkpoint:
+  save_every: 1
