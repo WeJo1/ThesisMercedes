@@ -1,4 +1,6 @@
 import argparse
+import json
+from pathlib import Path
 
 import torch
 from PIL import Image
@@ -6,47 +8,58 @@ from torchvision import transforms
 
 from src.models.pair_scorer import PairScorer
 from src.utils.checkpoint import load_checkpoint
-from src.utils.config import load_config
 
 
-def build_device(device_cfg: str) -> torch.device:
-    if device_cfg == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(device_cfg)
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run inference on one image pair.")
-    parser.add_argument("--config", type=str, default="configs/default.yaml")
+def build_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def build_transform() -> transforms.Compose:
+    return transforms.Compose(
+        [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Infer deviation for one image pair.")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--image-a", type=str, required=True)
-    parser.add_argument("--image-b", type=str, required=True)
+    parser.add_argument("--original_img", type=str, required=True)
+    parser.add_argument("--generated_img", type=str, required=True)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    device = build_device(cfg.get("device", "auto"))
+    device = build_device()
+    checkpoint = load_checkpoint(args.checkpoint, map_location=device)
+    model_cfg = checkpoint.get("config", {}).get("model", {})
 
-    transform = transforms.Compose([
-        transforms.Resize((cfg["data"]["image_size"], cfg["data"]["image_size"])),
-        transforms.ToTensor(),
-    ])
-
-    image_a = Image.open(args.image_a).convert("RGB")
-    image_b = Image.open(args.image_b).convert("RGB")
-
-    tensor_a = transform(image_a).unsqueeze(0).to(device)
-    tensor_b = transform(image_b).unsqueeze(0).to(device)
-
-    model = PairScorer(**cfg["model"]).to(device)
-    ckpt = load_checkpoint(args.checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
+    model = PairScorer(**model_cfg).to(device)
+    model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
-    with torch.no_grad():
-        logit = model(tensor_a, tensor_b)
-        score = torch.sigmoid(logit).item()
+    transform = build_transform()
+    original_img = Image.open(Path(args.original_img)).convert("RGB")
+    generated_img = Image.open(Path(args.generated_img)).convert("RGB")
 
-    print(f"score={score:.6f}")
+    input_a = transform(original_img).unsqueeze(0).to(device)
+    input_b = transform(generated_img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        pred_deviation = float(model(input_a, input_b).item())
+
+    pred_score_0_1 = max(0.0, min(1.0, 1.0 - (pred_deviation / 100.0)))
+    output = {
+        "pred_deviation_percent": pred_deviation,
+        "pred_score_0_1": pred_score_0_1,
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
